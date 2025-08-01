@@ -1,0 +1,139 @@
+from flask import Flask, request, send_file, render_template_string
+from openpyxl import Workbook, load_workbook
+from openpyxl.styles import Font, Alignment, PatternFill, Border, Side
+from io import BytesIO
+import re
+
+app = Flask(__name__)
+
+@app.route('/', methods=['GET', 'POST'])
+def upload_file():
+    if request.method == 'POST':
+        file = request.files['file']
+        if file:
+            output_stream = process_excel(file)
+            return send_file(output_stream, download_name="Coach_Wise_Output.xlsx", as_attachment=True)
+    return render_template_string('''
+        <!DOCTYPE html>
+        <html>
+        <head><title>Upload Excel</title></head>
+        <body>
+            <h2>Upload Excel File</h2>
+            <form method="post" enctype="multipart/form-data">
+                <input type="file" name="file" required>
+                <input type="submit" value="Generate Coach-Wise Excel">
+            </form>
+        </body>
+        </html>
+    ''')
+
+def process_excel(file_stream):
+    wb_input = load_workbook(file_stream, data_only=True)
+    ws_input = wb_input.active
+
+    train_number, train_date = "", ""
+
+    # Train Number और Date Auto Detect करें
+    for row in ws_input.iter_rows(min_row=1, max_row=5, max_col=10):
+        for cell in row:
+            if cell.value and isinstance(cell.value, str):
+                num_match = re.search(r'(\d{5})', cell.value)
+                date_match = re.search(r'(\d{1,2}-\d{1,2}-\d{4})', cell.value)
+                if num_match:
+                    train_number = num_match.group(1)
+                if date_match:
+                    train_date = date_match.group(1)
+        if train_number and train_date:
+            break
+
+    wb_out = Workbook()
+    ws_out = wb_out.active
+    ws_out.title = "Coach Wise"
+
+    header_font = Font(bold=True, size=11, name="Calibri")
+    title_font = Font(bold=True, size=12, name="Calibri")
+    align_center = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    border_thin = Border(left=Side(style='thin'), right=Side(style='thin'),
+                         top=Side(style='thin'), bottom=Side(style='thin'))
+    fill_blue = PatternFill(start_color="ADD8E6", end_color="ADD8E6", fill_type="solid")
+    fill_orange = PatternFill(start_color="FFCC99", end_color="FFCC99", fill_type="solid")
+
+    # Top Title
+    ws_out.merge_cells(start_row=1, start_column=1, end_row=1, end_column=100)
+    top_cell = ws_out.cell(row=1, column=1)
+    top_cell.value = f"{train_number}   {train_date}"
+    top_cell.font = title_font
+    top_cell.alignment = align_center
+
+    current_row = 2
+    current_col = 1
+
+    coach_blocks = {}
+    coach_order = []
+
+    # Coach-wise group
+    for row in ws_input.iter_rows(min_row=5, values_only=True):
+        if not row or not row[0]:
+            continue
+        coach = str(row[0]).strip()
+        if coach not in coach_blocks:
+            coach_blocks[coach] = []
+            coach_order.append(coach)
+        coach_blocks[coach].append(row)
+
+    for coach in coach_order:
+        block_data = coach_blocks[coach]
+        max_block_height = len(block_data) + 2
+        if current_row + max_block_height > 80:
+            current_row = 2
+            current_col += 5
+
+        ws_out.merge_cells(start_row=current_row, start_column=current_col, end_row=current_row, end_column=current_col + 2)
+        header_cell = ws_out.cell(row=current_row, column=current_col)
+        header_cell.value = coach
+        header_cell.font = header_font
+        header_cell.fill = fill_blue
+        header_cell.alignment = align_center
+        current_row += 1
+
+        # Hindi headers
+        headers = ["Station (स्टेशन)", "Berth (सीट सं.)", "Time (समय)"]
+        for i, h in enumerate(headers):
+            cell = ws_out.cell(row=current_row, column=current_col + i)
+            cell.value = h
+            cell.font = header_font
+            cell.fill = fill_orange
+            cell.alignment = align_center
+            cell.border = border_thin
+        current_row += 1
+
+        for row_data in block_data:
+            station = row_data[1] or ""
+            berth = row_data[2] or ""
+            time = row_data[3] or ""
+            row_vals = [station, berth, time]
+            for i in range(3):
+                cell = ws_out.cell(row=current_row, column=current_col + i)
+                cell.value = row_vals[i]
+                cell.alignment = align_center
+                cell.border = border_thin
+            current_row += 1
+
+        current_row += 1  # space between blocks
+
+    # Auto-fit
+    for col_cells in ws_out.columns:
+        max_len = 0
+        col_letter = col_cells[0].column_letter
+        for cell in col_cells:
+            if cell.value:
+                max_len = max(max_len, len(str(cell.value)))
+        ws_out.column_dimensions[col_letter].width = max_len + 3
+
+    output = BytesIO()
+    wb_out.save(output)
+    output.seek(0)
+    return output
+
+if __name__ == '__main__':
+    app.run(debug=True)
